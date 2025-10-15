@@ -154,6 +154,7 @@ class Layer {
     virtual void computeThreaded(const LayerData& dataIn) const = 0;
     virtual void computeTiled(const LayerData& dataIn) const = 0;
     virtual void computeSIMD(const LayerData& dataIn) const = 0;
+    virtual void computeQuantized(const LayerData& dataIn) const = 0;
 
    private:
     LayerParams inParams;

@@ -13,6 +13,19 @@
 #include "layers/MaxPooling.h"
 #include "layers/Softmax.h"
 
+#define QUANTIZE 8
+
+#define METHOD 2
+
+#if METHOD == 0
+#define COMPUTEMETHOD NAIVE
+#elif METHOD == 1
+#define COMPUTEMETHOD QUANTIZED
+#elif METHOD == 2
+#define COMPUTEMETHOD ACCEL
+#endif
+
+
 #ifdef ZEDBOARD
 #include <file_transfer/file_transfer.h>
 #endif
