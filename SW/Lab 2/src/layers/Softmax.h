@@ -27,6 +27,7 @@ class SoftmaxLayer : public Layer {
     virtual void computeThreaded(const LayerData& dataIn) const override;
     virtual void computeTiled(const LayerData& dataIn) const override;
     virtual void computeSIMD(const LayerData& dataIn) const override;
+    virtual void computeQuantized(const LayerData& dataIn) const override;
 
    private:
     // Softmax doesn't have additional parameters
