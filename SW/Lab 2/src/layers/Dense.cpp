@@ -96,25 +96,21 @@ namespace ML
         size_t totalInputFeatures = getInputParams().flat_count();
         size_t outputSize = getOutputParams().flat_count();
         
-        // Lab specification quantization parameters (these should be pre-calculated from profiling)
-        // Using more conservative, realistic parameters for better accuracy
+        // Simple quantization parameters (student-friendly approach)
+        // Using very conservative values to avoid overflow and extreme quantization
         
-        // Calculate Si = 127 / max(|Ix - avg(Ix)|) 
-        // For post-ReLU range [0, 6.35], using more conservative estimate
-        // Si = 127 / 3.0 = 42 (instead of aggressive 20)
-        float Si = 42.0f;  // Input scale - more conservative
+        // Input scale: assume typical values are in range [0, 4], so Si = 127/4 = 32
+        float Si = 32.0f;  // Simple input scale
         
-        // Calculate Sw = 127 / max(|Wx|)
-        // For typical dense weights [-0.5, 0.5], using more conservative
-        // Sw = 127 / 0.5 = 254 (instead of aggressive 254, keep same but justify better)
-        float Sw = 127.0f; // Weight scale - more conservative
+        // Weight scale: assume weights are in range [-0.25, 0.25], so Sw = 127/0.25 = 508
+        // But this is too aggressive, use simpler Sw = 100
+        float Sw = 100.0f; // Simple weight scale
         
-        // Calculate Sb = Si * Sw (lab specification)
+        // Bias scale: Si * Sw = 32 * 100 = 3200 (still large but more reasonable)
         float Sb = Si * Sw; // Bias scale
         
-        // Calculate zi = -round(avg(Ix) * Si)
-        // For post-ReLU avg ≈ 1.5, zi = -round(1.5 * 42) = -63 (more reasonable)
-        int8_t zi = -63;  // Input zero point - more conservative
+        // Input zero point: assume average input is 2.0, zi = -round(2.0 * 32) = -64
+        int8_t zi = -64;  // Simple zero point
         
         // Debug: Print quantization parameters
         std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
