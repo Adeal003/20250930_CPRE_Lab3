@@ -96,21 +96,20 @@ namespace ML
         size_t totalInputFeatures = getInputParams().flat_count();
         size_t outputSize = getOutputParams().flat_count();
         
-        // Simple quantization parameters (student-friendly approach)
-        // Using very conservative values to avoid overflow and extreme quantization
+        // Aggressive quantization parameters to force visible differences
+        // Using very small scales to create obvious quantization effects
         
-        // Input scale: assume typical values are in range [0, 4], so Si = 127/4 = 32
-        float Si = 32.0f;  // Simple input scale
+        // Much smaller input scale to force rounding errors
+        float Si = 8.0f;   // Very aggressive - will cause lots of rounding
         
-        // Weight scale: assume weights are in range [-0.25, 0.25], so Sw = 127/0.25 = 508
-        // But this is too aggressive, use simpler Sw = 100
-        float Sw = 100.0f; // Simple weight scale
+        // Much smaller weight scale to force rounding errors  
+        float Sw = 16.0f;  // Very aggressive - will cause lots of rounding
         
-        // Bias scale: Si * Sw = 32 * 100 = 3200 (still large but more reasonable)
+        // Bias scale = Si * Sw = 8 * 16 = 128 (much smaller, less bias domination)
         float Sb = Si * Sw; // Bias scale
         
-        // Input zero point: assume average input is 2.0, zi = -round(2.0 * 32) = -64
-        int8_t zi = -64;  // Simple zero point
+        // Smaller zero point 
+        int8_t zi = -16;   // Smaller zero point
         
         // Debug: Print quantization parameters
         std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
@@ -148,10 +147,9 @@ namespace ML
                 accumulator += static_cast<int32_t>(quantized_input[in_idx]) * static_cast<int32_t>(quantized_weight);
             }
             
-            // Step 3: Dequantize to FP32 for requantization
-            // Dequantization: float_value = (int32_accumulator) / (Si * Sw) + zero_point_correction
-            // The zero_point_correction accounts for zi bias in the accumulation
-            float dequantized = static_cast<float>(accumulator) / (Si * Sw);
+            // Step 3: Simple dequantization (student-friendly approach)
+            // Just divide by the combined scale and remove zero point bias
+            float dequantized = static_cast<float>(accumulator - zi * outputSize) / (Si * Sw);
             
             // Step 4: Apply ReLU with zero_point consideration
             if (outputSize != 200) {  // Hidden layer - apply ReLU

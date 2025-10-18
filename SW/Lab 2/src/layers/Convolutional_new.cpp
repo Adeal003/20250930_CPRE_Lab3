@@ -126,22 +126,20 @@ namespace ML
         size_t R = weightDims[0];
         size_t S = weightDims[1];
         
-        // Simple quantization parameters (student-friendly approach)
-        // Using very conservative values to avoid overflow
+        // Aggressive quantization parameters to force visible differences
+        // Using very small scales to create obvious quantization effects
         
-        // For first conv layer (input images), typical range [0, 1] normalized
-        // Si = 127 / 1.0 = 127, but let's be even simpler: Si = 64
-        float Si = 64.0f;  // Simple input scale
+        // Much smaller input scale to force rounding errors
+        float Si = 16.0f;  // Very aggressive - will cause lots of rounding
         
-        // Typical conv weights are small, so use simple scale
-        // Sw = 64 (matching input scale for simplicity)
-        float Sw = 64.0f;  // Simple weight scale
+        // Much smaller weight scale to force rounding errors
+        float Sw = 16.0f;  // Very aggressive - will cause lots of rounding
         
-        // Sb = Si * Sw = 64 * 64 = 4096 (manageable)
+        // Sb = Si * Sw = 16 * 16 = 256 (much smaller)
         float Sb = Si * Sw; // Bias scale
         
-        // For normalized images, avg ≈ 0.5, zi = -round(0.5 * 64) = -32
-        int8_t zi = -32;   // Simple zero point
+        // Smaller zero point
+        int8_t zi = -8;    // Smaller zero point
         
         // Step 1: Quantize inputs using lab formula: ix = round(Si * Ix) + zi
         size_t input_size = getInputParams().flat_count();
