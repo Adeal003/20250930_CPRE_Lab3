@@ -54,7 +54,6 @@ class LayerData {
     inline const void* raw() const { return data.get(); }
     inline void* raw() { return data.get(); }
 
-    
     template <typename T> void boundsCheck(unsigned int flat_index) const {
         if (sizeof(T) != params.elementSize) {
             std::ostringstream oss;
@@ -121,17 +120,23 @@ class LayerData {
 class Layer {
    public:
     // Inference Type
-    enum class InfType { NAIVE, THREADED, TILED, SIMD };
-
+    enum class InfType { 
+        NAIVE, 
+        THREADED, 
+        TILED, 
+        SIMD,
+        QUANTIZED,      // For quantized inference
+        ACCELERATED     // For hardware acceleration
+    };
+    
     // Layer Type
     enum class LayerType { NONE, CONVOLUTIONAL, DENSE, SOFTMAX, MAX_POOLING };
 
    public:
-    // Contructors
+    // Constructors
     Layer(const LayerParams inParams, const LayerParams outParams, LayerType lType)
         : inParams(inParams), outParams(outParams), outData(outParams), lType(lType) {}
     virtual ~Layer() {}
-
 
     // Getter Functions
     const LayerParams& getInputParams() const { return inParams; }
@@ -140,6 +145,18 @@ class Layer {
     LayerType getLType() const { return lType; }
     bool isOutputBufferAlloced() const { return outData.isAlloced(); }
     bool checkDataInputCompatibility(const LayerData& data) const;
+
+    // Quantization setup functions
+    virtual void quantizeWeights(float input_min, float input_max) {
+        // Base implementation - override in derived classes
+    }
+    
+    virtual void setActivationRange(float min, float max) {
+        activation_min = min;
+        activation_max = max;
+    }
+    
+    bool isWeightsQuantized() const { return weights_quantized; }
 
     // Abstract/Virtual Functions
     virtual void allocLayer() {
@@ -156,12 +173,26 @@ class Layer {
     virtual void computeSIMD(const LayerData& dataIn) const = 0;
     virtual void computeQuantized(const LayerData& dataIn) const = 0;
 
+   protected:
+    // Quantization scales and zero points
+    float input_scale = 1.0f;
+    float weight_scale = 1.0f; 
+    float bias_scale = 1.0f;
+    int8_t input_zero_point = 0;
+    
+    // Profiled activation ranges
+    float activation_min = 0.0f;
+    float activation_max = 1.0f;
+    
+    // Quantized parameters
+    std::vector<int8_t> quantized_weights;
+    std::vector<int32_t> quantized_biases;
+    bool weights_quantized = false;
+
    private:
     LayerParams inParams;
-
     LayerParams outParams;
     mutable LayerData outData;
-
     LayerType lType;
 };
 
@@ -204,8 +235,7 @@ inline void LayerData::loadData(Path filePath) {
 #endif
 }
 
-
-// Load data values
+// Save data values
 inline void LayerData::saveData(Path filePath) {
     if (filePath.empty()) filePath = params.filePath;
     
@@ -220,7 +250,7 @@ inline void LayerData::saveData(Path filePath) {
     FIL file;
     if (f_open(&file, params.filePath.c_str(), FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) { // Open our file on the SD card
 #else
-    std::ifstream file(params.filePath, std::ios::binary);  // Create and open our file
+    std::ofstream file(params.filePath, std::ios::binary);  // Create and open our file
     if (file.is_open()) {
 #endif
         std::cout << "Opened binary file " << params.filePath << std::endl;
@@ -232,15 +262,15 @@ inline void LayerData::saveData(Path filePath) {
     UINT bytes_written = 0;
     if ((f_write(&file, data.get(), params.byte_size(), &bytes_written) != FR_OK) || (bytes_written != params.byte_size())) {
 #else
-    if (!file.read((char*)data.get(), params.byte_size())) {
+    if (!file.write((char*)data.get(), params.byte_size())) {
 #endif
-        throw std::runtime_error("Failed to read file data");
+        throw std::runtime_error("Failed to write file data");
     }
 
 #ifdef ZEDBOARD
     f_close(&file);
 #else
-    // Close our file (ifstream deconstructor does this for us)
+    // Close our file
 #endif
 }
 
@@ -255,46 +285,23 @@ template <typename T> float LayerData::compare(const LayerData& other) const {
                   + " and " + std::to_string(bParams.elementSize) + ")\n");
     }
     if (aParams.dims.size() != bParams.dims.size()) {
-        throw std::runtime_error("LayerData arrays must have the same number of dimentions");
+        throw std::runtime_error("LayerData arrays must have the same number of dimensions");
     }
 
-    // Ensure each dimention size matches
+    // Ensure each dimension size matches
     for (std::size_t i = 0; i < aParams.dims.size(); i++) {
         if (aParams.dims[i] != bParams.dims[i]) {
-            throw std::runtime_error("LayerData arrays must have the same size dimentions to be compared");
+            throw std::runtime_error("LayerData arrays must have the same size dimensions to be compared");
         }
     }
 
     size_t flat_count = params.flat_count();
-
-
-    
-
-    
-    // //MAXIMUM DIFFERENCE
-    // float max_diff = 0;
-
-    // T* data1 = (T*)data.get();
-    // T* data2 = (T*)other.data.get();
-    // // Recurse as needed into each array
-    // for (std::size_t i = 0; i < flat_count; i++) {
-    //     float curr_diff = fabsf(data1[i] - data2[i]);
-
-    //     // Update our max difference if it is larger
-    //     if (curr_diff > max_diff) {
-    //         max_diff = curr_diff;
-    //     }
-    // }
-
-    // return max_diff;
-
 
     //MODIFIED LENGTH WEIGHTED COSINE SIMILARITY
     double dot_product = 0;
     double a_magnitude_sq = 0;
     double b_magnitude_sq = 0;
     
-
     T* a_vector = (T*)data.get();
     T* b_vector = (T*)other.data.get();
     // Recurse as needed into each array
@@ -321,19 +328,6 @@ template <typename T, typename T_EP> bool LayerData::compareWithin(const LayerDa
 }
 
 template <typename T, typename T_EP> bool LayerData::compareWithinPrint(const LayerData& other, const T_EP epsilon) const {
-    // // MAXDIFF
-    // float max_diff = compare<T>(other);
-    // bool result = (epsilon > compare<T>(other));
-
-    // std::cout 
-    //     << "Comparing images (max error): " 
-    //     << (result ? "True" : "False")
-    //     << " ("
-    //     << max_diff
-    //     << ")\n";
-    
-    // return result;
-
     //LENGTH WEIGHTED COSINE SIMILARITY
     float cosine_similarity = compare<T>(other);
     bool result = (compare<T>(other) > 0.8);
