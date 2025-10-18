@@ -24,56 +24,61 @@ const LayerData& Model::inferenceLayer(const LayerData& inData, const int layerN
 
     assert(layer.getInputParams().isCompatible(inData.getParams()) && "Input data is not compatible with layer");
     assert(layer.isOutputBufferAlloced() && "Output buffer must be allocated prior to inference");
-    void Model::forward(const Tensor3D& input, Tensor1D& output, InfType inf_type) {
-    Tensor3D current_output = input;
-    
-    for (auto& layer : layers) {
-        Tensor3D next_output;
-        
-        switch(inf_type) {
-            case InfType::CPU_BASELINE:
-                layer->compute(current_output, next_output);
-                break;
-                
-            case InfType::QUANTIZED:  // ADD this case
-                if (!layer->weights_quantized) {
-                    // Load quantization parameters from your profiling
-                    layer->quantizeWeights(/* pass profiled min/max */);
-                }
-                layer->computeQuantized(current_output, next_output);
-                break;
-                
-            case InfType::ACCELERATED:  // For future hardware integration
-                layer->computeAccelerated(current_output, next_output);
-                break;
-                
-            default:
-                layer->compute(current_output, next_output);
-        }
-        
-        current_output = next_output;
-    }
-    
-    // Convert final output to 1D
-    output = current_output[0][0];
-}
-    
-    switch (infType) {
-    case Layer::InfType::NAIVE:
-        layer.computeNaive(inData);
-        break;
-    case Layer::InfType::THREADED:
-        layer.computeThreaded(inData);
-        break;
-    case Layer::InfType::TILED:
-        layer.computeTiled(inData);
-        break;
-    case Layer::InfType::SIMD:
-        layer.computeSIMD(inData);
-        break;
-    default:
-        assert(false && "Inference Type not implemented");
-    }
+    // void Model::forward(const Tensor3D &input, Tensor1D &output, InfType inf_type)
+    // {
+    //     Tensor3D current_output = input;
+
+    //     for (auto &layer : layers)
+    //     {
+    //         Tensor3D next_output;
+
+    //         switch (inf_type)
+    //         {
+    //         case InfType::CPU_BASELINE:
+    //             layer->compute(current_output, next_output);
+    //             break;
+
+    //         case InfType::QUANTIZED: // ADD this case
+    //             if (!layer->weights_quantized)
+    //             {
+    //                 // Load quantization parameters from your profiling
+    //                 layer->quantizeWeights(/* pass profiled min/max */);
+    //             }
+    //             layer->computeQuantized(current_output, next_output);
+    //             break;
+
+    //         case InfType::ACCELERATED: // For future hardware integration
+    //             layer->computeAccelerated(current_output, next_output);
+    //             break;
+
+    //         default:
+    //             layer->compute(current_output, next_output);
+    //         }
+
+    //         current_output = next_output;
+    //     }
+
+    //     // Convert final output to 1D
+    //     output = current_output[0][0];
+    // }
+
+    // switch (infType)
+    // {
+    // case Layer::InfType::NAIVE:
+    //     layer.computeNaive(inData);
+    //     break;
+    // case Layer::InfType::THREADED:
+    //     layer.computeThreaded(inData);
+    //     break;
+    // case Layer::InfType::TILED:
+    //     layer.computeTiled(inData);
+    //     break;
+    // case Layer::InfType::SIMD:
+    //     layer.computeSIMD(inData);
+    //     break;
+    // default:
+    //     assert(false && "Inference Type not implemented");
+    // }
 
     return layer.getOutputData();
 }
