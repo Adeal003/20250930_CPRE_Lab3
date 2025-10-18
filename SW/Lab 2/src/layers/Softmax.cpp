@@ -75,8 +75,9 @@ namespace ML
         LayerData& output = getOutputData();
         
         // Use quantization parameters matching previous layer (Dense layer output)
-        float Si = 20.0f;  // Should match previous layer's output quantization
-        int8_t zi = -60;   // Should match previous layer's zero point
+        // Using more conservative parameters to avoid saturation
+        float Si = 42.0f;  // Should match previous layer's output quantization (more conservative)
+        int8_t zi = -63;   // Should match previous layer's zero point (more conservative)
         
         // Step 1: Quantize inputs to int8 first (simulating quantized input from previous layer)
         std::vector<int8_t> quantized_input(numElements);

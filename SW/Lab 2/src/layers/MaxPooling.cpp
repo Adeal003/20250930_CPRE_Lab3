@@ -111,8 +111,9 @@ namespace ML
         
         // Use same quantization parameters as previous layer for consistency
         // These should match the output of the previous layer
-        float Si = 20.0f;  // Should match previous layer's output quantization
-        int8_t zi = -60;   // Should match previous layer's zero point
+        // Using more conservative parameters to avoid saturation
+        float Si = 42.0f;  // Should match previous layer's output quantization (more conservative)
+        int8_t zi = -63;   // Should match previous layer's zero point (more conservative)
         
         // Step 1: Quantize inputs to int8 using lab formula: ix = round(Si * Ix) + zi
         size_t input_size = getInputParams().flat_count();

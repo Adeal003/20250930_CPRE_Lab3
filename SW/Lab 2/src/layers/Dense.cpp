@@ -88,28 +88,36 @@ namespace ML
     }
 
     void DenseLayer::computeQuantized(const LayerData& dataIn) const {
+        // Debug: Verify quantized path is being taken
+        std::cout << "[DEBUG] Dense computeQuantized() called" << std::endl;
+        
         // Simple quantized implementation using int8 arithmetic
         //const auto &weightDims = getWeightParams().dims;
         size_t totalInputFeatures = getInputParams().flat_count();
         size_t outputSize = getOutputParams().flat_count();
         
         // Lab specification quantization parameters (these should be pre-calculated from profiling)
-        // For now using reasonable estimates - in practice these come from profiling data ranges
+        // Using more conservative, realistic parameters for better accuracy
         
         // Calculate Si = 127 / max(|Ix - avg(Ix)|) 
-        // Assuming typical post-ReLU range [0, 6.35] -> max deviation = 6.35, Si = 127/6.35 = 20
-        float Si = 20.0f;  // Input scale
+        // For post-ReLU range [0, 6.35], using more conservative estimate
+        // Si = 127 / 3.0 = 42 (instead of aggressive 20)
+        float Si = 42.0f;  // Input scale - more conservative
         
         // Calculate Sw = 127 / max(|Wx|)
-        // Assuming typical weight range [-0.5, 0.5] -> max = 0.5, Sw = 127/0.5 = 254
-        float Sw = 254.0f; // Weight scale
+        // For typical dense weights [-0.5, 0.5], using more conservative
+        // Sw = 127 / 0.5 = 254 (instead of aggressive 254, keep same but justify better)
+        float Sw = 127.0f; // Weight scale - more conservative
         
         // Calculate Sb = Si * Sw (lab specification)
         float Sb = Si * Sw; // Bias scale
         
+        // Debug: Print quantization parameters
+        std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
+        
         // Calculate zi = -round(avg(Ix) * Si)
-        // Assuming avg(Ix) ≈ 3.0 for post-ReLU activations, zi = -round(3.0 * 20) = -60
-        int8_t zi = -60;  // Input zero point
+        // For post-ReLU avg ≈ 1.5, zi = -round(1.5 * 42) = -63 (more reasonable)
+        int8_t zi = -63;  // Input zero point - more conservative
         
         // Note: Weight and bias zero points are 0 per lab specification
         
@@ -157,6 +165,12 @@ namespace ML
             // Store result (will be requantized by next layer)
             output.get<fp32>(out_idx) = dequantized;
         }
+        
+        // Debug: Print first few output values to verify quantization effects
+        std::cout << "[DEBUG] First 3 quantized outputs: " 
+                  << output.get<fp32>(0) << ", " 
+                  << output.get<fp32>(1) << ", " 
+                  << output.get<fp32>(2) << std::endl;
     }
 
 }

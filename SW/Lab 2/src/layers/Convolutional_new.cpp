@@ -109,6 +109,9 @@ namespace ML
     // Compute the convolution using quantized int8 arithmetic
     void ConvolutionalLayer::computeQuantized(const LayerData &dataIn) const
     {
+        // Debug: Verify quantized path is being taken
+        std::cout << "[DEBUG] Conv computeQuantized() called" << std::endl;
+        
         // Quantized convolution following lab specifications exactly
         const auto &inputDims = getInputParams().dims;   // [H, W, C_in]
         const auto &outputDims = getOutputParams().dims; // [H_out, W_out, C_out]
@@ -124,20 +127,24 @@ namespace ML
         size_t S = weightDims[1];
         
         // Lab specification quantization parameters (should be pre-calculated from profiling)
+        // Using more conservative, realistic parameters for better accuracy
         
         // For first conv layer (input images), typical range [0, 1] normalized
-        // Si = 127 / max(|Ix - avg(Ix)|) ≈ 127 / 0.5 = 254 for normalized images
-        float Si = 254.0f;  // Input scale
+        // Si = 127 / max(|Ix - avg(Ix)|) ≈ 127 / 0.5 = 254, but this is too aggressive
+        // Using more conservative: Si = 127 / 1.0 = 127 for [0,1] range
+        float Si = 127.0f;  // Input scale - more conservative
         
-        // Typical conv weights range [-0.2, 0.2]
-        // Sw = 127 / max(|Wx|) = 127 / 0.2 = 635
-        float Sw = 635.0f; // Weight scale
+        // Typical conv weights range [-0.1, 0.1] (more realistic)
+        // Sw = 127 / max(|Wx|) = 127 / 0.1 = 1270, but this is too aggressive  
+        // Using more conservative: Sw = 127 / 0.2 = 635, still too high
+        // Even more conservative: Sw = 127 / 0.5 = 254
+        float Sw = 254.0f; // Weight scale - more conservative
         
         // Sb = Si * Sw (lab specification)
         float Sb = Si * Sw; // Bias scale
         
-        // For normalized images, avg ≈ 0.5, zi = -round(0.5 * 254) = -127
-        int8_t zi = -127;  // Input zero point
+        // For normalized images, avg ≈ 0.5, zi = -round(0.5 * 127) = -64 (more reasonable)
+        int8_t zi = -64;  // Input zero point - more conservative
         
         // Step 1: Quantize inputs using lab formula: ix = round(Si * Ix) + zi
         size_t input_size = getInputParams().flat_count();
