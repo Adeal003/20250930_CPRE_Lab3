@@ -73,7 +73,25 @@ namespace ML
             }
         }
     }
+    // MaxPool operates directly on int8 - no changes needed for quantized path
+void MaxPool2D::computeQuantized(const Tensor3D& input, Tensor3D& output) {
+    // Can directly call regular compute since it's just taking max values
+    compute(input, output);
+}
 
+// ReLU needs to account for zero point
+void ReLU::computeQuantized(const Tensor3D& input, Tensor3D& output) {
+    output = input;
+    // Zero point handling depends on your quantization scheme
+    // For symmetric quantization with zero_point = 0, standard ReLU works
+    for (auto& channel : output) {
+        for (auto& row : channel) {
+            for (auto& val : row) {
+                val = std::max(0.0f, val);
+            }
+        }
+    }
+}
     void MaxPoolingLayer::computeThreaded(const LayerData& dataIn) const {
         // For simplicity, use naive implementation with thread hints
         // TODO: Implement actual threading
