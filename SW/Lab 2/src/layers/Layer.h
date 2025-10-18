@@ -4,6 +4,8 @@
 #include <cstring>
 #include <memory>
 #include <sstream>
+#include <cmath>
+#include <algorithm>
 
 #include "../Config.h"
 #include "../Utils.h"
@@ -149,6 +151,7 @@ class Layer {
     // Quantization setup functions
     virtual void quantizeWeights(float input_min, float input_max) {
         // Base implementation - override in derived classes
+        weights_quantized = true;
     }
     
     virtual void setActivationRange(float min, float max) {
@@ -157,6 +160,16 @@ class Layer {
     }
     
     bool isWeightsQuantized() const { return weights_quantized; }
+
+    // Simple helper functions for quantization (student-friendly)
+    int8_t quantizeFloat(float value, float scale, int8_t zero_point) const {
+        int32_t quantized = static_cast<int32_t>(std::round(value / scale) + zero_point);
+        return static_cast<int8_t>(std::max(-128, std::min(127, quantized)));
+    }
+    
+    float dequantizeInt8(int8_t value, float scale, int8_t zero_point) const {
+        return scale * (static_cast<float>(value) - static_cast<float>(zero_point));
+    }
 
     // Abstract/Virtual Functions
     virtual void allocLayer() {

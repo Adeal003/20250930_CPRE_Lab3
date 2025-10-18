@@ -55,43 +55,6 @@ namespace ML
                 
                 sum += dataIn.get<fp32>(in_idx) * weights.get<fp32>(weightIdx);
             }
-          // Quantize input to int8
-        std::vector<int8_t> q_input(input_size);
-             int idx = 0;
-         for (const auto& channel : input) {
-            for (const auto& row : channel) {
-             for (float val : row) {
-                q_input[idx++] = std::clamp(
-                    static_cast<int>(std::round(val * input_scale) + input_zero_point),
-                    -128, 127
-                );
-            }
-        }
-    }
-            // Perform int8 matrix multiplication
-    std::vector<int32_t> q_output(output_size, 0);
-    for (int i = 0; i < output_size; i++) {
-        int32_t acc = quantized_biases[i];
-        for (int j = 0; j < input_size; j++) {
-            acc += static_cast<int32_t>(q_input[j]) * 
-                   static_cast<int32_t>(quantized_weights[i * input_size + j]);
-        }
-        q_output[i] = acc;
-    }
-    
-    // Dequantize output to FP32
-    output.resize(1);
-    output[0].resize(1);
-    output[0][0].resize(output_size);
-    
-    for (int i = 0; i < output_size; i++) {
-        float dequantized = static_cast<float>(q_output[i] - input_zero_point * 
-                           std::accumulate(quantized_weights.begin() + i * input_size,
-                                         quantized_weights.begin() + (i + 1) * input_size, 0)) /
-                           (input_scale * weight_scale);
-        output[0][0][i] = dequantized;
-    }
-}
             // Apply ReLU activation only for hidden layers (not the final layer before Softmax)
             // The final dense layer typically has 200 outputs (for classification)
             // Hidden dense layers have other sizes (like 256)
@@ -122,6 +85,63 @@ namespace ML
         // For simplicity, use naive implementation
         // TODO: Implement SIMD optimized matrix multiplication
         computeNaive(dataIn);
+    }
+
+    void DenseLayer::computeQuantized(const LayerData& dataIn) const {
+        // Simple quantized implementation using int8 arithmetic
+        const auto &weightDims = getWeightParams().dims;
+        size_t totalInputFeatures = getInputParams().flat_count();
+        size_t outputSize = getOutputParams().flat_count();
+        
+        // Get quantization parameters (assume they're set up)
+        float input_scale = 1.0f / 127.0f;    // Si = 127 / max(|Ix - avg(Ix)|)
+        float weight_scale = 1.0f / 127.0f;   // Sw = 127 / max(|Wx|)
+        float bias_scale = input_scale * weight_scale;  // Sb = Si * Sw
+        int8_t input_zero_point = 0;  // zi = -round(avg(Ix) * Si)
+        
+        const LayerData& weights = getWeightData();
+        const LayerData& bias = getBiasData();
+        LayerData& output = getOutputData();
+        
+        // Step 1: Quantize inputs to int8
+        std::vector<int8_t> quantized_input(totalInputFeatures);
+        for (size_t i = 0; i < totalInputFeatures; i++) {
+            float fp_val = dataIn.get<fp32>(i);
+            // ix = round(Si * Ix) + zi
+            int32_t temp = static_cast<int32_t>(std::round(input_scale * fp_val)) + input_zero_point;
+            quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
+        }
+        
+        // Step 2: Perform int8 matrix multiplication with int32 accumulation
+        for (size_t out_idx = 0; out_idx < outputSize; out_idx++) {
+            // Start with quantized bias (int32)
+            int32_t accumulator = static_cast<int32_t>(std::round(bias_scale * bias.get<fp32>(out_idx)));
+            
+            // Accumulate: sum(ix * wx)
+            for (size_t in_idx = 0; in_idx < totalInputFeatures; in_idx++) {
+                size_t weightIdx = in_idx * outputSize + out_idx;
+                float fp_weight = weights.get<fp32>(weightIdx);
+                
+                // Quantize weight: wx = round(Sw * Wx)
+                int8_t quantized_weight = static_cast<int8_t>(
+                    std::max(-128, std::min(127, static_cast<int32_t>(std::round(weight_scale * fp_weight)))));
+                
+                // int32 accumulation
+                accumulator += static_cast<int32_t>(quantized_input[in_idx]) * static_cast<int32_t>(quantized_weight);
+            }
+            
+            // Step 3: Dequantize back to FP32
+            // float_value = (int32_value - zero_point_offset) / (Si * Sw)
+            float dequantized = static_cast<float>(accumulator - input_zero_point * 0) / (input_scale * weight_scale);
+            
+            // Step 4: Apply ReLU if not final layer (simple check)
+            if (outputSize != 200) {  // Hidden layer
+                dequantized = std::max(0.0f, dequantized);
+            }
+            
+            // Store result
+            output.get<fp32>(out_idx) = dequantized;
+        }
     }
 
 }

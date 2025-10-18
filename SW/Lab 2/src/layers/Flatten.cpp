@@ -46,4 +46,24 @@ namespace ML
         computeNaive(dataIn);
     }
 
+    void FlattenLayer::computeQuantized(const LayerData& dataIn) const {
+        // Flattening works the same way with quantized data
+        // since it's just reshaping/copying memory without changing values
+        // No quantization/dequantization needed - just pass through the data
+        
+        size_t inputElements = getInputParams().flat_count();
+        size_t outputElements = getOutputParams().flat_count();
+        
+        if (inputElements != outputElements) {
+            std::cerr << "Flatten layer element count mismatch: input=" 
+                      << inputElements << ", output=" << outputElements << std::endl;
+            return;
+        }
+
+        LayerData& output = getOutputData();
+        
+        // Simply copy the data (preserving quantized values if they exist)
+        std::memcpy(output.raw(), dataIn.raw(), inputElements * sizeof(fp32));
+    }
+
 }
