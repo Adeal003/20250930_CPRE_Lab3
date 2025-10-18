@@ -112,12 +112,12 @@ namespace ML
         // Calculate Sb = Si * Sw (lab specification)
         float Sb = Si * Sw; // Bias scale
         
-        // Debug: Print quantization parameters
-        std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
-        
         // Calculate zi = -round(avg(Ix) * Si)
         // For post-ReLU avg ≈ 1.5, zi = -round(1.5 * 42) = -63 (more reasonable)
         int8_t zi = -63;  // Input zero point - more conservative
+        
+        // Debug: Print quantization parameters
+        std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
         
         // Note: Weight and bias zero points are 0 per lab specification
         
