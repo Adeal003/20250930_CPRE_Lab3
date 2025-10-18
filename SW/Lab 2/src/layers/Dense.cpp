@@ -89,7 +89,7 @@ namespace ML
 
     void DenseLayer::computeQuantized(const LayerData& dataIn) const {
         // Simple quantized implementation using int8 arithmetic
-        const auto &weightDims = getWeightParams().dims;
+        //const auto &weightDims = getWeightParams().dims;
         size_t totalInputFeatures = getInputParams().flat_count();
         size_t outputSize = getOutputParams().flat_count();
         
