@@ -207,12 +207,12 @@ void runLayerTest(const std::size_t layerNum, const Model& model, const Path& ba
         timer.start();
         
         // Start with layer 0
-        model.inferenceLayer(img, 0, Layer::InfType::NAIVE);
+        model.inferenceLayer(img, 0, Layer::InfType::QUANTIZED);
         const LayerData* output = &model[0].getOutputData();
         
         // Run subsequent layers up to layerNum
         for (std::size_t i = 1; i <= layerNum; i++) {
-            model.inferenceLayer(*output, i, Layer::InfType::NAIVE);
+            model.inferenceLayer(*output, i, Layer::InfType::QUANTIZED);
             output = &model[i].getOutputData();
         }
         
