@@ -69,30 +69,32 @@ namespace ML
     }
 
     void SoftmaxLayer::computeQuantized(const LayerData& dataIn) const {
-        // Softmax must operate on dequantized (FP32) values as per documentation
+        // Softmax per lab specs: "use the dequantized values (fp32) for the softmax function, 
+        // your softmax function will remain unchanged"
         size_t numElements = getInputParams().flat_count();
         LayerData& output = getOutputData();
         
-        // Quantization parameters for input
-        float input_scale = 1.0f / 127.0f;
-        int8_t input_zero_point = 0;
+        // Use quantization parameters matching previous layer (Dense layer output)
+        float Si = 20.0f;  // Should match previous layer's output quantization
+        int8_t zi = -60;   // Should match previous layer's zero point
         
-        // Step 1: Quantize inputs to int8 first (simulating input from previous layer)
+        // Step 1: Quantize inputs to int8 first (simulating quantized input from previous layer)
         std::vector<int8_t> quantized_input(numElements);
         for (size_t i = 0; i < numElements; i++) {
             float fp_val = dataIn.get<fp32>(i);
-            int32_t temp = static_cast<int32_t>(std::round(input_scale * fp_val)) + input_zero_point;
+            // ix = round(Si * Ix) + zi (lab specification)
+            int32_t temp = static_cast<int32_t>(std::round(Si * fp_val)) + zi;
             quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
         }
         
         // Step 2: Dequantize back to FP32 for softmax computation
+        // Dequantization: float_value = (int8_value - zero_point) * scale
         std::vector<fp32> dequantized_input(numElements);
         for (size_t i = 0; i < numElements; i++) {
-            // float_value = (int8_value - zero_point) * scale
-            dequantized_input[i] = static_cast<float>(quantized_input[i] - input_zero_point) * input_scale;
+            dequantized_input[i] = static_cast<float>(quantized_input[i] - zi) / Si;
         }
         
-        // Step 3: Standard softmax computation on FP32 values
+        // Step 3: Standard softmax computation on FP32 values (unchanged per lab specs)
         // Find maximum for numerical stability
         fp32 maxVal = -INFINITY;
         for (size_t i = 0; i < numElements; i++) {
@@ -113,7 +115,7 @@ namespace ML
         for (size_t i = 0; i < numElements; i++) {
             output.get<fp32>(i) = output.get<fp32>(i) / sumExp;
         }
-        // Note: Softmax output is typically kept in FP32 for final classification
+        // Note: Softmax output remains in FP32 for final classification (lab specification)
     }
 
 }

@@ -329,6 +329,36 @@ void runInferenceTest(const Model& model, const Path& basePath) {
     }
 }
 
+void runQuantizedInferenceTest(const Model& model, const Path& basePath) {
+    logInfo("--- Running QUANTIZED Inference Test ---");
+
+    // Load the input image
+    LayerData img(model[0].getInputParams(), basePath / "image_0.bin");
+    img.loadData();
+
+    Timer timer("Quantized Full Inference");
+
+    // Run full inference on the model using QUANTIZED mode
+    timer.start();
+    const LayerData& output = model.inference(img, Layer::InfType::QUANTIZED);
+    timer.stop();
+
+    // Compare against the final layer output (layer 11 for our 12-layer model, 0-indexed)
+    try {
+        LayerData expected(model.getOutputLayer().getOutputParams(), basePath / "image_0_data" / "layer_11_output.bin");
+        expected.loadData();
+        std::cout << "QUANTIZED vs EXPECTED: ";
+        output.compareWithinPrint<fp32>(expected);
+    } catch (const std::exception& e) {
+        std::cout << "Quantized inference test failed: " << e.what() << std::endl;
+    }
+    
+    // Also compare quantized vs naive to see the difference
+    const LayerData& naiveOutput = model.inference(img, Layer::InfType::NAIVE);
+    std::cout << "QUANTIZED vs NAIVE: ";
+    output.compareWithinPrint<fp32>(naiveOutput);
+}
+
 void runAllLayerTests(const Model& model, const Path& basePath) {
     logInfo("--- Running All Layer Tests ---");
     
@@ -357,6 +387,9 @@ void runTests() {
 
     // Run an end-to-end inference test
     runInferenceTest(model, basePath);
+    
+    // Run quantized inference test
+    runQuantizedInferenceTest(model, basePath);
 
     // Clean up
     model.freeLayers();

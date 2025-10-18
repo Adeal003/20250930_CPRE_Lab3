@@ -93,8 +93,8 @@ namespace ML
     }
 
     void MaxPoolingLayer::computeQuantized(const LayerData& dataIn) const {
-        // MaxPooling can work directly on int8 values since it just takes maximum
-        // No dequantization/requantization needed as per the documentation
+        // MaxPooling per lab specs: "take the max of the int8 input values without 
+        // any dequantization/requantization involved"
         
         const auto &inputDims = getInputParams().dims;   // [H_in, W_in, C_in]
         const auto &outputDims = getOutputParams().dims; // [H_out, W_out, C_out]
@@ -109,22 +109,23 @@ namespace ML
         size_t poolHeight = poolDims[0];
         size_t poolWidth = poolDims[1];
         
-        // Quantization parameters for input
-        float input_scale = 1.0f / 127.0f;
-        int8_t input_zero_point = 0;
+        // Use same quantization parameters as previous layer for consistency
+        // These should match the output of the previous layer
+        float Si = 20.0f;  // Should match previous layer's output quantization
+        int8_t zi = -60;   // Should match previous layer's zero point
         
-        // Step 1: Quantize inputs to int8
+        // Step 1: Quantize inputs to int8 using lab formula: ix = round(Si * Ix) + zi
         size_t input_size = getInputParams().flat_count();
         std::vector<int8_t> quantized_input(input_size);
         for (size_t i = 0; i < input_size; i++) {
             float fp_val = dataIn.get<fp32>(i);
-            int32_t temp = static_cast<int32_t>(std::round(input_scale * fp_val)) + input_zero_point;
+            int32_t temp = static_cast<int32_t>(std::round(Si * fp_val)) + zi;
             quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
         }
 
         LayerData& output = getOutputData();
 
-        // Step 2: Perform max pooling directly on int8 values
+        // Step 2: Perform max pooling directly on int8 values (lab specification)
         for (size_t c = 0; c < outputChannels; c++) {
             for (size_t h_out = 0; h_out < outputHeight; h_out++) {
                 for (size_t w_out = 0; w_out < outputWidth; w_out++) {
@@ -149,8 +150,9 @@ namespace ML
                         }
                     }
 
-                    // Step 3: Dequantize result back to FP32 for output
-                    float dequantized = static_cast<float>(maxVal - input_zero_point) * input_scale;
+                    // Step 3: Dequantize result back to FP32 for next layer
+                    // Dequantization: float_value = (int8_value - zero_point) * scale
+                    float dequantized = static_cast<float>(maxVal - zi) / Si;
                     
                     size_t outputIdx = h_out * (outputWidth * outputChannels) +
                                        w_out * outputChannels + c;
