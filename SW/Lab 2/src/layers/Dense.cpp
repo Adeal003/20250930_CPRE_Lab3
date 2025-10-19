@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <cmath>
 
 #include "../Types.h"
 #include "../Utils.h"
@@ -91,80 +92,102 @@ namespace ML
         // Debug: Verify quantized path is being taken
         std::cout << "[DEBUG] Dense computeQuantized() called" << std::endl;
         
-        // Simple quantized implementation using int8 arithmetic
-        //const auto &weightDims = getWeightParams().dims;
+        // Get dimensions
         size_t totalInputFeatures = getInputParams().flat_count();
         size_t outputSize = getOutputParams().flat_count();
         
-        // Aggressive quantization parameters to force visible differences
-        // Using very small scales to create obvious quantization effects
-        
-        // Much smaller input scale to force rounding errors
-        float Si = 8.0f;   // Very aggressive - will cause lots of rounding
-        
-        // Much smaller weight scale to force rounding errors  
-        float Sw = 16.0f;  // Very aggressive - will cause lots of rounding
-        
-        // Bias scale = Si * Sw = 8 * 16 = 128 (much smaller, less bias domination)
-        float Sb = Si * Sw; // Bias scale
-        
-        // Smaller zero point 
-        int8_t zi = -16;   // Smaller zero point
-        
-        // Debug: Print quantization parameters
-        std::cout << "[DEBUG] Si=" << Si << ", Sw=" << Sw << ", Sb=" << Sb << ", zi=" << (int)zi << std::endl;
-        
-        // Note: Weight and bias zero points are 0 per lab specification
-        
+        // Get data pointers
         const LayerData& weights = getWeightData();
         const LayerData& bias = getBiasData();
         LayerData& output = getOutputData();
         
-        // Step 1: Quantize inputs using lab formula: ix = round(Si * Ix) + zi
-        std::vector<int8_t> quantized_input(totalInputFeatures);
+        // ===== STEP 1: Calculate weight scale Sw =====
+        // Sw = 127 / max(|Wx|)
+        fp32 max_weight = 0.0f;
+        for (size_t i = 0; i < totalInputFeatures * outputSize; i++) {
+            fp32 abs_val = std::abs(weights.get<fp32>(i));
+            if (abs_val > max_weight) {
+                max_weight = abs_val;
+            }
+        }
+        fp32 Sw = 127.0f / max_weight;
+        
+        // ===== STEP 2: Calculate input scale Si and zero point zi =====
+        // Si = 127 / max(|Ix - avg(Ix)|)
+        // zi = -round(avg(Ix) * Si)
+        
+        // Calculate input average
+        fp32 input_sum = 0.0f;
         for (size_t i = 0; i < totalInputFeatures; i++) {
-            float fp_val = dataIn.get<fp32>(i);
-            // ix = round(Si * Ix) + zi (lab specification)
-            int32_t temp = static_cast<int32_t>(std::round(Si * fp_val)) + zi;
-            quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
+            input_sum += dataIn.get<fp32>(i);
+        }
+        fp32 input_avg = input_sum / totalInputFeatures;
+        
+        // Find max deviation from average
+        fp32 max_deviation = 0.0f;
+        for (size_t i = 0; i < totalInputFeatures; i++) {
+            fp32 deviation = std::abs(dataIn.get<fp32>(i) - input_avg);
+            if (deviation > max_deviation) {
+                max_deviation = deviation;
+            }
         }
         
-        // Step 2: Perform int8 matrix multiplication with int32 accumulation
+        // Calculate scale and zero point
+        fp32 Si = 127.0f / max_deviation;
+        i8 zi = static_cast<i8>(-std::round(input_avg * Si));
+        
+        // ===== STEP 3: Calculate bias scale =====
+        // Sb = Si * Sw
+        fp32 Sb = Si * Sw;
+        
+        // ===== STEP 4: Quantize inputs =====
+        // ix = round(Si * Ix) + zi
+        std::vector<i8> quantized_input(totalInputFeatures);
+        for (size_t i = 0; i < totalInputFeatures; i++) {
+            i32 temp = static_cast<i32>(std::round(Si * dataIn.get<fp32>(i))) + zi;
+            // Clamp to int8 range
+            quantized_input[i] = static_cast<i8>(std::max(-128, std::min(127, temp)));
+        }
+        
+        // ===== STEP 5: Perform quantized computation =====
         for (size_t out_idx = 0; out_idx < outputSize; out_idx++) {
             // Start with quantized bias: bx = round(Sb * Bx)
-            int32_t accumulator = static_cast<int32_t>(std::round(Sb * bias.get<fp32>(out_idx)));
+            i32 accumulator = static_cast<i32>(std::round(Sb * bias.get<fp32>(out_idx)));
             
             // Accumulate: sum(ix * wx)
             for (size_t in_idx = 0; in_idx < totalInputFeatures; in_idx++) {
                 size_t weightIdx = in_idx * outputSize + out_idx;
-                float fp_weight = weights.get<fp32>(weightIdx);
+                fp32 fp_weight = weights.get<fp32>(weightIdx);
                 
-                // Quantize weight: wx = round(Sw * Wx) (lab specification)
-                int8_t quantized_weight = static_cast<int8_t>(
-                    std::max(-128, std::min(127, static_cast<int32_t>(std::round(Sw * fp_weight)))));
+                // Quantize weight: wx = round(Sw * Wx)
+                i32 temp_weight = static_cast<i32>(std::round(Sw * fp_weight));
+                i8 quantized_weight = static_cast<i8>(std::max(-128, std::min(127, temp_weight)));
                 
                 // int32 accumulation
-                accumulator += static_cast<int32_t>(quantized_input[in_idx]) * static_cast<int32_t>(quantized_weight);
+                accumulator += static_cast<i32>(quantized_input[in_idx]) * static_cast<i32>(quantized_weight);
             }
             
-            // Step 3: Simple dequantization (student-friendly approach)
-            // Just divide by the combined scale and remove zero point bias
-            float dequantized = static_cast<float>(accumulator - zi * outputSize) / (Si * Sw);
-            
-            // Step 4: Apply ReLU with zero_point consideration
+            // ===== STEP 6: Apply ReLU in quantized space =====
+            // ReLU: if accumulator < zi, set to zi (NOT zero!)
             if (outputSize != 200) {  // Hidden layer - apply ReLU
-                dequantized = std::max(0.0f, dequantized);
+                if (accumulator < static_cast<i32>(zi)) {
+                    accumulator = static_cast<i32>(zi);
+                }
             }
             
-            // Store result (will be requantized by next layer)
+            // ===== STEP 7: Dequantize back to fp32 =====
+            // fp32_value = (int32_value - zi) / (Si * Sw)
+            fp32 dequantized = static_cast<fp32>(accumulator - zi) / (Si * Sw);
+            
+            // Store result
             output.get<fp32>(out_idx) = dequantized;
         }
         
-        // Debug: Print first few output values to verify quantization effects
+        // Debug: Print first few output values
         std::cout << "[DEBUG] First 3 quantized outputs: " 
                   << output.get<fp32>(0) << ", " 
                   << output.get<fp32>(1) << ", " 
                   << output.get<fp32>(2) << std::endl;
     }
 
-}
+}  // namespace ML

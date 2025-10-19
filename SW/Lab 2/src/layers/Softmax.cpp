@@ -68,55 +68,11 @@ namespace ML
         computeNaive(dataIn);
     }
 
-    void SoftmaxLayer::computeQuantized(const LayerData& dataIn) const {
-        // Softmax per lab specs: "use the dequantized values (fp32) for the softmax function, 
-        // your softmax function will remain unchanged"
-        size_t numElements = getInputParams().flat_count();
-        LayerData& output = getOutputData();
-        
-        // Use quantization parameters matching previous layer (Dense layer output)
-        // Using more conservative parameters to avoid saturation
-        float Si = 42.0f;  // Should match previous layer's output quantization (more conservative)
-        int8_t zi = -63;   // Should match previous layer's zero point (more conservative)
-        
-        // Step 1: Quantize inputs to int8 first (simulating quantized input from previous layer)
-        std::vector<int8_t> quantized_input(numElements);
-        for (size_t i = 0; i < numElements; i++) {
-            float fp_val = dataIn.get<fp32>(i);
-            // ix = round(Si * Ix) + zi (lab specification)
-            int32_t temp = static_cast<int32_t>(std::round(Si * fp_val)) + zi;
-            quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
-        }
-        
-        // Step 2: Dequantize back to FP32 for softmax computation
-        // Dequantization: float_value = (int8_value - zero_point) * scale
-        std::vector<fp32> dequantized_input(numElements);
-        for (size_t i = 0; i < numElements; i++) {
-            dequantized_input[i] = static_cast<float>(quantized_input[i] - zi) / Si;
-        }
-        
-        // Step 3: Standard softmax computation on FP32 values (unchanged per lab specs)
-        // Find maximum for numerical stability
-        fp32 maxVal = -INFINITY;
-        for (size_t i = 0; i < numElements; i++) {
-            if (dequantized_input[i] > maxVal) {
-                maxVal = dequantized_input[i];
-            }
-        }
-
-        // Compute exponentials and sum
-        fp32 sumExp = 0.0f;
-        for (size_t i = 0; i < numElements; i++) {
-            fp32 expVal = std::exp(dequantized_input[i] - maxVal);
-            output.get<fp32>(i) = expVal;
-            sumExp += expVal;
-        }
-
-        // Normalize by the sum
-        for (size_t i = 0; i < numElements; i++) {
-            output.get<fp32>(i) = output.get<fp32>(i) / sumExp;
-        }
-        // Note: Softmax output remains in FP32 for final classification (lab specification)
-    }
+void SoftmaxLayer::computeQuantized(const LayerData& dataIn) const {
+    // Softmax always works with fp32 values per lab specification
+    // No quantization handling needed - input is already dequantized from previous layer
+    std::cout << "[DEBUG] Softmax computeQuantized() called (same as naive)" << std::endl;
+    computeNaive(dataIn);
+}
 
 }

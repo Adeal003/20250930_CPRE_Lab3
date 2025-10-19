@@ -107,12 +107,13 @@ namespace ML
     }
 
     // Compute the convolution using quantized int8 arithmetic
+    // Compute the convolution using quantized int8 arithmetic
     void ConvolutionalLayer::computeQuantized(const LayerData &dataIn) const
     {
         // Debug: Verify quantized path is being taken
         std::cout << "[DEBUG] Conv computeQuantized() called" << std::endl;
         
-        // Quantized convolution following lab specifications exactly
+        // Get dimensions
         const auto &inputDims = getInputParams().dims;   // [H, W, C_in]
         const auto &outputDims = getOutputParams().dims; // [H_out, W_out, C_out]
         const auto &weightDims = getWeightParams().dims; // [K_H, K_W, C_in, C_out]
@@ -126,38 +127,63 @@ namespace ML
         size_t R = weightDims[0];
         size_t S = weightDims[1];
         
-        // Aggressive quantization parameters to force visible differences
-        // Using very small scales to create obvious quantization effects
+        // ===== STEP 1: Calculate weight scale Sw =====
+        // Sw = 127 / max(|Wx|)
+        size_t weight_size = getWeightParams().flat_count();
+        fp32 max_weight = 0.0f;
+        for (size_t i = 0; i < weight_size; i++) {
+            fp32 abs_val = std::abs(getWeightData().get<fp32>(i));
+            if (abs_val > max_weight) {
+                max_weight = abs_val;
+            }
+        }
+        fp32 Sw = 127.0f / max_weight;
         
-        // Much smaller input scale to force rounding errors
-        float Si = 16.0f;  // Very aggressive - will cause lots of rounding
+        // ===== STEP 2: Calculate input scale Si and zero point zi =====
+        // Si = 127 / max(|Ix - avg(Ix)|)
+        // zi = -round(avg(Ix) * Si)
         
-        // Much smaller weight scale to force rounding errors
-        float Sw = 16.0f;  // Very aggressive - will cause lots of rounding
-        
-        // Sb = Si * Sw = 16 * 16 = 256 (much smaller)
-        float Sb = Si * Sw; // Bias scale
-        
-        // Smaller zero point
-        int8_t zi = -8;    // Smaller zero point
-        
-        // Step 1: Quantize inputs using lab formula: ix = round(Si * Ix) + zi
         size_t input_size = getInputParams().flat_count();
-        std::vector<int8_t> quantized_input(input_size);
+        
+        // Calculate input average
+        fp32 input_sum = 0.0f;
         for (size_t i = 0; i < input_size; i++) {
-            float fp_val = dataIn.get<fp32>(i);
-            // ix = round(Si * Ix) + zi (lab specification)
-            int32_t temp = static_cast<int32_t>(std::round(Si * fp_val)) + zi;
-            quantized_input[i] = static_cast<int8_t>(std::max(-128, std::min(127, temp)));
+            input_sum += dataIn.get<fp32>(i);
+        }
+        fp32 input_avg = input_sum / input_size;
+        
+        // Find max deviation from average
+        fp32 max_deviation = 0.0f;
+        for (size_t i = 0; i < input_size; i++) {
+            fp32 deviation = std::abs(dataIn.get<fp32>(i) - input_avg);
+            if (deviation > max_deviation) {
+                max_deviation = deviation;
+            }
+        }
+        
+        // Calculate scale and zero point
+        fp32 Si = 127.0f / max_deviation;
+        i8 zi = static_cast<i8>(-std::round(input_avg * Si));
+        
+        // ===== STEP 3: Calculate bias scale =====
+        // Sb = Si * Sw
+        fp32 Sb = Si * Sw;
+        
+        // ===== STEP 4: Quantize inputs =====
+        // ix = round(Si * Ix) + zi
+        std::vector<i8> quantized_input(input_size);
+        for (size_t i = 0; i < input_size; i++) {
+            i32 temp = static_cast<i32>(std::round(Si * dataIn.get<fp32>(i))) + zi;
+            // Clamp to int8 range
+            quantized_input[i] = static_cast<i8>(std::max(-128, std::min(127, temp)));
         }
 
-        // Step 2: Perform quantized convolution
+        // ===== STEP 5: Perform quantized convolution =====
         for (size_t p = 0; p < P; p++) {
             for (size_t q = 0; q < Q; q++) {
                 for (size_t m = 0; m < M; m++) {
                     // Start with quantized bias: bx = round(Sb * Bx)
-                    int32_t accumulator = static_cast<int32_t>(
-                        std::round(Sb * getBiasData().get<fp32>(m)));
+                    i32 accumulator = static_cast<i32>(std::round(Sb * getBiasData().get<fp32>(m)));
                     
                     // Perform the convolution sum in int8
                     for (size_t c = 0; c < C; c++) {
@@ -173,31 +199,39 @@ namespace ML
                                 // Weight index: [r, s, c, m]
                                 size_t weight_idx = r * S * C * M + s * C * M + c * M + m;
                                 
-                                // Quantize weight: wx = round(Sw * Wx) (lab specification)
-                                float fp_weight = getWeightData().get<fp32>(weight_idx);
-                                int8_t quantized_weight = static_cast<int8_t>(
-                                    std::max(-128, std::min(127, static_cast<int32_t>(std::round(Sw * fp_weight)))));
+                                // Quantize weight: wx = round(Sw * Wx)
+                                fp32 fp_weight = getWeightData().get<fp32>(weight_idx);
+                                i32 temp_weight = static_cast<i32>(std::round(Sw * fp_weight));
+                                i8 quantized_weight = static_cast<i8>(std::max(-128, std::min(127, temp_weight)));
                                 
                                 // int32 accumulation: ix * wx
-                                accumulator += static_cast<int32_t>(quantized_input[input_idx]) * 
-                                              static_cast<int32_t>(quantized_weight);
+                                accumulator += static_cast<i32>(quantized_input[input_idx]) * 
+                                              static_cast<i32>(quantized_weight);
                             }
                         }
                     }
                     
-                    // Step 3: Dequantize to FP32 for requantization
-                    // Dequantization: output = accumulator / (Si * Sw) with zero_point correction
-                    float dequantized = static_cast<float>(accumulator) / (Si * Sw);
+                    // ===== STEP 6: Apply ReLU in quantized space =====
+                    // ReLU: if accumulator < zi, set to zi (NOT zero!)
+                    if (accumulator < static_cast<i32>(zi)) {
+                        accumulator = static_cast<i32>(zi);
+                    }
                     
-                    // Step 4: Apply ReLU activation with zero_point consideration
-                    dequantized = std::max(0.0f, dequantized);
+                    // ===== STEP 7: Dequantize back to fp32 =====
+                    // fp32_value = (int32_value - zi) / (Si * Sw)
+                    fp32 dequantized = static_cast<fp32>(accumulator - zi) / (Si * Sw);
                     
-                    // Store result (will be requantized by next layer)
+                    // Store result
                     size_t output_idx = p * Q * M + q * M + m;
                     getOutputData().get<fp32>(output_idx) = dequantized;
                 }
             }
         }
+        
+        // Debug: Print first few output values
+        std::cout << "[DEBUG] First 3 quantized conv outputs: " 
+                  << getOutputData().get<fp32>(0) << ", " 
+                  << getOutputData().get<fp32>(1) << ", " 
+                  << getOutputData().get<fp32>(2) << std::endl;
     }
-
 } // namespace ML
