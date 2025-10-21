@@ -110,6 +110,7 @@ namespace ML
                 max_weight = abs_val;
             }
         }
+        std::cout << "[DEBUG] Max weight value: " << max_weight << std::endl;
         fp32 Sw = 127.0f / max_weight;
         
         // ===== STEP 2: Calculate input scale Si and zero point zi =====
@@ -183,11 +184,11 @@ namespace ML
             output.get<fp32>(out_idx) = dequantized;
         }
         
-        // Debug: Print first few output values
-        std::cout << "[DEBUG] First 3 quantized outputs: " 
-                  << output.get<fp32>(0) << ", " 
-                  << output.get<fp32>(1) << ", " 
-                  << output.get<fp32>(2) << std::endl;
+        // // Debug: Print first few output values
+        // std::cout << "[DEBUG] First 3 quantized outputs: " 
+        //           << output.get<fp32>(0) << ", " 
+        //           << output.get<fp32>(1) << ", " 
+        //           << output.get<fp32>(2) << std::endl;
     }
 
 }  // namespace ML
