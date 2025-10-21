@@ -137,6 +137,7 @@ namespace ML
                 max_weight = abs_val;
             }
         }
+        std::cout << "[DEBUG] Max weight value: " << max_weight << std::endl;
         fp32 Sw = 127.0f / max_weight;
         
         // ===== STEP 2: Calculate input scale Si and zero point zi =====
