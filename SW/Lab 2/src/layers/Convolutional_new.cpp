@@ -228,10 +228,10 @@ namespace ML
             }
         }
         
-        // Debug: Print first few output values
-        std::cout << "[DEBUG] First 3 quantized conv outputs: " 
-                  << getOutputData().get<fp32>(0) << ", " 
-                  << getOutputData().get<fp32>(1) << ", " 
-                  << getOutputData().get<fp32>(2) << std::endl;
+        // // Debug: Print first few output values
+        // std::cout << "[DEBUG] First 3 quantized conv outputs: " 
+        //           << getOutputData().get<fp32>(0) << ", " 
+        //           << getOutputData().get<fp32>(1) << ", " 
+        //           << getOutputData().get<fp32>(2) << std::endl;
     }
 } // namespace ML
