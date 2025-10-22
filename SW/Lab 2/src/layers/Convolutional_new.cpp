@@ -174,7 +174,7 @@ namespace ML
         // ix = round(Si * Ix) + zi
         std::vector<i8> quantized_input(input_size);
         for (size_t i = 0; i < input_size; i++) {
-            i32 temp = static_cast<i32>(std::round(Si * dataIn.get<fp32>(i))) + zi;
+            i32 temp = static_cast<i32>(std::round(Si / dataIn.get<fp32>(i))) + zi;
             // Clamp to int8 range
             quantized_input[i] = static_cast<i8>(std::max(-128, std::min(127, temp)));
         }
@@ -184,7 +184,7 @@ namespace ML
             for (size_t q = 0; q < Q; q++) {
                 for (size_t m = 0; m < M; m++) {
                     // Start with quantized bias: bx = round(Sb * Bx)
-                    i32 accumulator = static_cast<i32>(std::round(Sb * getBiasData().get<fp32>(m)));
+                    i32 accumulator = static_cast<i32>(std::round(Sb / getBiasData().get<fp32>(m)));
                     
                     // Perform the convolution sum in int8
                     for (size_t c = 0; c < C; c++) {
@@ -202,7 +202,7 @@ namespace ML
                                 
                                 // Quantize weight: wx = round(Sw * Wx)
                                 fp32 fp_weight = getWeightData().get<fp32>(weight_idx);
-                                i32 temp_weight = static_cast<i32>(std::round(Sw * fp_weight));
+                                i32 temp_weight = static_cast<i32>(std::round(Sw / fp_weight));
                                 i8 quantized_weight = static_cast<i8>(std::max(-128, std::min(127, temp_weight)));
                                 
                                 // int32 accumulation: ix * wx
