@@ -49,4 +49,10 @@ class ConvolutionalLayer : public Layer {
     LayerData biasData;
 };
 
+// Utility functions for calibrated quantization
+void resetConvLayerCounter();
+int getCurrentConvLayerCount();
+void enableLayerSpecificCalibration(bool enable);
+bool isLayerSpecificCalibrationEnabled();
+
 }  // namespace ML
