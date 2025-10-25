@@ -49,4 +49,10 @@ class DenseLayer : public Layer {
     LayerData biasData;
 };
 
+// Utility functions for calibrated quantization - Dense layers
+void resetDenseLayerCounter();
+int getCurrentDenseLayerCount();
+void enableDenseLayerSpecificCalibration(bool enable);
+bool isDenseLayerSpecificCalibrationEnabled();
+
 }  // namespace ML
