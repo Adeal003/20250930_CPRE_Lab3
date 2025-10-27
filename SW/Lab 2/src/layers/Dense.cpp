@@ -243,41 +243,72 @@ namespace ML
         size_t outputSize = getOutputParams().flat_count();
         
         // ==========================================================================
-        // ADAPTIVE INPUT CALIBRATION SELECTION - DENSE LAYERS
+        // ADAPTIVE CALIBRATION SELECTION FOR DENSE LAYERS
+        // Behavior implemented below:
+        // - If use_dense_layer_specific_calibration is true OR this is the final
+        //   classification layer (outputSize == 200) then we compute adaptive
+        //   input statistics at runtime (min/max → Si, zi). This path also
+        //   increments dense_layer_count and is logged as "ADAPTIVE".
+        // - Otherwise (individual layer test mode) we use precomputed "_input"
+        //   calibration stats from dense_calibration_data (Si, zi).
+        // - The code expects calibration data to have been loaded earlier; if
+        //   "_input" is missing it logs an error and returns.
         // ==========================================================================
-        // Two modes:
-        // 1. Individual layer tests: All layers receive raw/processed data → use appropriate stats
-        // 2. Full inference chain: Each layer receives previous layer output → use layer-specific stats
-        // ==========================================================================
-        
-        std::string input_stats_name;
-        if (use_dense_layer_specific_calibration) {
-            // Full inference mode: use layer-specific calibration stats
-            if (dense_layer_count == 0) {
-                // First dense layer gets conv output, but for individual tests use "_input"
-                input_stats_name = "_input";  
-            } else if (dense_layer_count == 1) {
-                input_stats_name = "dense";     // Second dense gets first dense output
-            } else {
-                input_stats_name = "dense_1";   // Final layer gets second dense output
+        fp32 Si;
+        i8 zi;
+        std::string calibration_mode;
+
+          if (use_dense_layer_specific_calibration || outputSize == 200) {
+            // FULL INFERENCE MODE OR FINAL DENSE LAYER: Calculate adaptive input statistics from actual data
+            fp32 input_min = dataIn.get<fp32>(0);
+            fp32 input_max = dataIn.get<fp32>(0);
+            
+            for (size_t i = 0; i < totalInputFeatures; i++) {
+                fp32 val = dataIn.get<fp32>(i);
+                if (val < input_min) input_min = val;
+                if (val > input_max) input_max = val;
             }
+            
+            // Calculate adaptive scale and zero point
+            fp32 input_range = input_max - input_min;
+            if (input_range < 1e-8f) input_range = 1.0f;
+
+            Si = 254.0f / input_range;  // Use full int8 range (-127 to 127)
+
+            // IMPROVED: Center the quantization range more optimally
+            fp32 zero_point_float = -Si * (input_min + input_max) / 2.0f;  // Center around midpoint
+            zi = static_cast<i8>(std::max(-128.0f, std::min(127.0f, std::round(zero_point_float))));
+            
+            // Clamp zi to valid int8 range
+            zi = static_cast<i8>(std::max(-128, std::min(127, static_cast<int>(zi))));
+            
+            calibration_mode = "ADAPTIVE";
+            dense_layer_count++;
+            
+            logInfo("\n\nADAPTIVE: Using runtime-calculated Si=" + std::to_string(Si) + 
+                    ", zi=" + std::to_string(static_cast<int>(zi)) + 
+                    " (input range: " + std::to_string(input_min) + " to " + std::to_string(input_max) + ")");
         } else {
-            // Individual layer test mode: use appropriate stats based on layer type
-            if (outputSize == 2048) {
-                // First dense layer (2048 outputs) - in individual tests, gets flattened conv data
-                // But since it's individual test, use raw input stats
-                input_stats_name = "_input";
-            } else if (outputSize == 256) {
-                // Second dense layer (256 outputs) - in individual tests, gets raw data
-                input_stats_name = "_input";
-            } else if (outputSize == 200) {
-                // Final dense layer (200 outputs) - in individual tests, gets raw data  
-                input_stats_name = "_input";
-            } else {
-                input_stats_name = "_input";  // Default fallback
+            // INDIVIDUAL LAYER TEST MODE: Use "_input" calibration stats (only for hidden dense layers)
+            auto input_stats_it = dense_calibration_data.find("_input");
+            if (input_stats_it == dense_calibration_data.end()) {
+                logError("No dense calibration stats found for '_input'");
+                logError("Available layers in dense calibration data:");
+                for (const auto& pair : dense_calibration_data) {
+                    logError("  - " + pair.first);
+                }
+                return;
             }
+            
+            const DenseCalibrationStats& input_stats = input_stats_it->second;
+            Si = input_stats.Si;
+            zi = input_stats.zi;
+            calibration_mode = "_input";
+            
+            logInfo("Using calibration stats: _input - Si=" + std::to_string(Si) + 
+                    ", zi=" + std::to_string(static_cast<int>(zi)));
         }
-        
+
         // Identify current layer for logging purposes
         std::string current_layer_name;
         if (outputSize == 2048) {
@@ -289,29 +320,12 @@ namespace ML
         } else {
             current_layer_name = "unknown_dense";  // Unknown configuration
         }
-        
-        // Find the input calibration stats
-        auto input_stats_it = dense_calibration_data.find(input_stats_name);
-        if (input_stats_it == dense_calibration_data.end()) {
-            logError("No dense calibration stats found for input data: " + input_stats_name);
-            logError("Available layers in dense calibration data:");
-            for (const auto& pair : dense_calibration_data) {
-                logError("  - " + pair.first);
-            }
-            return;
-        }
-        
-        const DenseCalibrationStats& input_stats = input_stats_it->second;
-        
+
         logInfo("Processing dense layer: " + current_layer_name + " (input_features: " + 
-                std::to_string(totalInputFeatures) + ", output_features: " + std::to_string(outputSize) + ")");
-        logInfo("Using calibration stats: " + input_stats_name + " - Si=" + std::to_string(input_stats.Si) + 
-                ", zi=" + std::to_string(static_cast<int>(input_stats.zi)));
+                std::to_string(totalInputFeatures) + ", output_features: " + std::to_string(outputSize) + 
+                ") using " + calibration_mode + " calibration");
         
-        // Increment counter for next layer in chain
-        if (use_dense_layer_specific_calibration) {
-            dense_layer_count++;
-        }
+        
         
         // ==========================================================================
         // SECTION 3: USE PRE-CALCULATED QUANTIZATION PARAMETERS
@@ -336,15 +350,12 @@ namespace ML
         
         fp32 Sw = 127.0f / max_weight;
         logDebug("Dense weight scale Sw = " + std::to_string(Sw) + " (max_weight = " + std::to_string(max_weight) + ")");
-        
+
         // -------------------------
-        // 3.2: Use PRE-CALCULATED INPUT SCALE (Si) and ZERO POINT (zi)
+        // 3.2: Use CALCULATED INPUT SCALE (Si) and ZERO POINT (zi)
         // -------------------------
-        // These come directly from calibration_stats.json
-        fp32 Si = input_stats.Si;
-        i8 zi = input_stats.zi;
-        
-        logDebug("Using calibrated dense input scale Si = " + std::to_string(Si) + 
+        // These come from either adaptive calculation or "_input" calibration
+        logDebug("Using dense input scale Si = " + std::to_string(Si) + 
                 ", zero point zi = " + std::to_string(static_cast<int>(zi)));
         
         // -------------------------
@@ -414,22 +425,23 @@ namespace ML
             // ==========================================================
             // SECTION 8: DEQUANTIZE BACK TO FP32 WITH ZERO-POINT CORRECTION
             // ==========================================================
-            // CRITICAL FIX: Apply zero-point offset correction for dense layers
-            // Formula: result = (accumulator - zi*Σ(weights)) / (Si * Sw)
+            // MATHEMATICAL FIX: Correct zero-point offset calculation
+            // Standard asymmetric quantization formula:
+            // result = (accumulator - zi * Σ(weights)) / (Si * Sw)
             // ==========================================================
-            
-            // STEP 1: Calculate sum of all quantized weights for this output
+
+            // Calculate sum of quantized weights for this output neuron
             i32 weight_sum = 0;
             for (size_t in_idx = 0; in_idx < totalInputFeatures; in_idx++) {
                 size_t weight_idx = in_idx * outputSize + out_idx;
                 weight_sum += static_cast<i32>(quantized_weights[weight_idx]);
             }
-            
-            // STEP 2: Calculate the zero-point offset that accumulated
-            i32 zero_point_offset = static_cast<i32>(zi) * weight_sum;
-            
-            // STEP 3: Remove offset and dequantize using calibrated parameters
-            fp32 result = static_cast<fp32>(accumulator - zero_point_offset) / (Si * Sw);
+
+            // Apply zero-point correction: subtract the accumulated zero-point bias
+            i32 corrected_accumulator = accumulator - (static_cast<i32>(zi) * weight_sum);
+
+            // Dequantize to floating point
+            fp32 result = static_cast<fp32>(corrected_accumulator) / (Si * Sw);
             
             // ==========================================================
             // SECTION 9: APPLY ReLU ACTIVATION (In FP32 space!)
@@ -503,6 +515,13 @@ namespace ML
     // Reset the dense layer counter (call this at the start of each inference)
     void resetDenseLayerCounter() {
         dense_layer_count = 0;
+        logInfo("Reset dense calibration state: dense_layer_count = 0");
+    }
+    // Enable layer-specific calibration for dense layers
+    void setDenseCalibrationMode(bool use_layer_specific) {
+        use_dense_layer_specific_calibration = use_layer_specific;
+        resetDenseLayerCounter();
+        logInfo("Set dense calibration mode: " + std::string(use_layer_specific ? "layer-specific" : "individual-tests"));
     }
     
     // Get current dense layer counter value (for debugging)

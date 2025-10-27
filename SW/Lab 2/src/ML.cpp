@@ -164,7 +164,7 @@ Model buildToyModel(const Path modelPath) {
 }
 
 void runBasicTest(const Model& model, const Path& basePath) {
-    logInfo("--- Running Basic Test ---");
+    logInfo("\n--- Running Basic Test ---");
 
     // Load an image
     LayerData img = {{sizeof(fp32), {64, 64, 3}, "./data/image_0.bin"}};
@@ -193,7 +193,11 @@ void runBasicTest(const Model& model, const Path& basePath) {
 }
 
 void runLayerTest(const std::size_t layerNum, const Model& model, const Path& basePath) {
-    logInfo(std::string("--- Running Layer Test ") + std::to_string(layerNum) + "---");
+    // Added by BibidhB: Reset calibration state for each individual layer test
+    setCalibrationMode(false);          // Individual layer test mode
+    setDenseCalibrationMode(false);    // Individual layer test mode for dense layers
+        
+    logInfo(std::string("\n--- Running Layer Test ") + std::to_string(layerNum) + "---");
     
     try {
         // For layer testing, we always start with the original input image
@@ -304,7 +308,7 @@ void runLayerTest(const std::size_t layerNum, const Model& model, const Path& ba
 }
 
 void runInferenceTest(const Model& model, const Path& basePath) {
-    logInfo("--- Running Inference Test ---");
+    logInfo("\n--- Running Inference Test ---");
 
     // Load the input image
     LayerData img(model[0].getInputParams(), basePath / "image_0.bin");
@@ -329,8 +333,206 @@ void runInferenceTest(const Model& model, const Path& basePath) {
     }
 }
 
+// =============================================================================
+// USING CLASSIFICATION EVALUATION FUNCTIONS INSTEAD OF COSINE SIMILARITY
+//
+// Reasoning:
+// Cosine similarity measures the angle between two vectors and is useful for
+// comparing embedding directions, but it is not sufficient for final
+// classification logits/probabilities because:
+//
+// - Insensitivity to magnitude: Cosine ignores magnitude changes which can
+//   significantly affect softmax outputs and therefore predicted classes.
+// - Top-K ordering: Cosine does not reflect changes to the top-K ranking of
+//   classes, which is important for accuracy/top-5 metrics.
+// - Distributional differences: Small changes in logits can produce large
+//   changes in the softmax distribution; cosine does not quantify this.
+// - Calibration and confidence: Cosine gives no interpretable measure of
+//   confidence (probabilities) or how well the model is calibrated after
+//   quantization.
+//
+// For these reasons we should use classification-oriented metrics in addition to a single
+// cosine-similarity score: prediction consistency, softmax confidences,
+// top-K overlap, KL-divergence between softmax distributions, and confidence
+// differences. These metrics give more actionable insight into how quantization
+// impacts final model behavior.
+// =============================================================================
+
+// find max index
+int getMaxIndex(const LayerData& data) {
+    size_t size = data.getParams().flat_count();
+    int maxIndex = 0;
+    fp32 maxValue = data.get<fp32>(0);
+    
+    for (size_t i = 1; i < size; i++) {
+        fp32 value = data.get<fp32>(i);
+        if (value > maxValue) {
+            maxValue = value;
+            maxIndex = static_cast<int>(i);
+        }
+    }
+    return maxIndex;
+}
+
+// apply softmax
+std::vector<fp32> applySoftmax(const LayerData& data) {
+    size_t size = data.getParams().flat_count();
+    std::vector<fp32> result(size);
+    
+    // Find max for numerical stability
+    fp32 maxVal = data.get<fp32>(0);
+    for (size_t i = 1; i < size; i++) {
+        maxVal = std::max(maxVal, data.get<fp32>(i));
+    }
+    
+    // Compute exp(x - max) and sum
+    fp32 sum = 0.0f;
+    for (size_t i = 0; i < size; i++) {
+        result[i] = std::exp(data.get<fp32>(i) - maxVal);
+        sum += result[i];
+    }
+    
+    // Normalize
+    for (size_t i = 0; i < size; i++) {
+        result[i] /= sum;
+    }
+    
+    return result;
+}
+
+//  get top-K indices
+std::vector<int> getTopKIndices(const LayerData& data, int k) {
+    size_t size = data.getParams().flat_count();
+    std::vector<std::pair<fp32, int>> valueIndexPairs;
+    
+    for (size_t i = 0; i < size; i++) {
+        valueIndexPairs.push_back({data.get<fp32>(i), static_cast<int>(i)});
+    }
+    
+    // Sort by value (descending)
+    std::sort(valueIndexPairs.begin(), valueIndexPairs.end(), 
+              [](const std::pair<fp32, int>& a, const std::pair<fp32, int>& b) {
+                  return a.first > b.first;
+              });
+    
+    std::vector<int> topK;
+    for (int i = 0; i < k && i < static_cast<int>(size); i++) {
+        topK.push_back(valueIndexPairs[i].second);
+    }
+    
+    return topK;
+}
+
+// calculate overlap between two vectors
+int calculateOverlap(const std::vector<int>& a, const std::vector<int>& b) {
+    int overlap = 0;
+    for (int valueA : a) {
+        for (int valueB : b) {
+            if (valueA == valueB) {
+                overlap++;
+                break;
+            }
+        }
+    }
+    return overlap;
+}
+
+// calculate KL-Divergence
+fp32 calculateKLDivergence(const std::vector<fp32>& p, const std::vector<fp32>& q) {
+    fp32 kl_div = 0.0f;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] > 1e-8f && q[i] > 1e-8f) {
+            kl_div += p[i] * std::log(p[i] / q[i]);
+        }
+    }
+    return kl_div;
+}
+
+// Main classification evaluation function
+void evaluateClassificationPerformance(const LayerData& naive_output,
+                                     const LayerData& quantized_output) {
+    
+    std::cout << "\n--- CLASSIFICATION LAYER EVALUATION ---" << std::endl;
+    
+    // 1. Prediction Consistency
+    int naive_pred = getMaxIndex(naive_output);
+    int quantized_pred = getMaxIndex(quantized_output);
+    bool same_prediction = (naive_pred == quantized_pred);
+    
+    std::cout << "Naive Prediction: Class " << naive_pred << std::endl;
+    std::cout << "Quantized Prediction: Class " << quantized_pred << std::endl;
+    std::cout << "Prediction Consistency: " << (same_prediction ? "MATCHED" : "ERROR: DIFFERENT PREDICTION THAN NAIVE (wrong prediction consistency)") << std::endl;
+
+    // 2. Confidence Analysis
+    auto naive_probs = applySoftmax(naive_output);
+    auto quantized_probs = applySoftmax(quantized_output);
+    
+    fp32 naive_confidence = naive_probs[naive_pred] * 100.0f;
+    fp32 quantized_confidence = quantized_probs[quantized_pred] * 100.0f;
+
+    std::cout << "\nNaive Confidence: " << naive_confidence << "%" << std::endl;
+    std::cout << "Quantized Confidence: " << quantized_confidence << "%" << std::endl;
+    
+    // 3. Top-K Analysis
+    auto naive_top5 = getTopKIndices(naive_output, 5);
+    auto quantized_top5 = getTopKIndices(quantized_output, 5);
+    int overlap = calculateOverlap(naive_top5, quantized_top5);
+
+    std::cout << "\nTop-5 Overlap: " << overlap << "/5 classes match" << std::endl;
+
+    // Display top-5 predictions
+    std::cout << "Naive Top-5: ";
+    for (int i = 0; i < 5 && i < static_cast<int>(naive_top5.size()); i++) {
+        std::cout << naive_top5[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    std::cout << "Quantized Top-5: ";
+    for (int i = 0; i < 5 && i < static_cast<int>(quantized_top5.size()); i++) {
+        std::cout << quantized_top5[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    // 4. KL-Divergence
+    fp32 kl_div = calculateKLDivergence(naive_probs, quantized_probs);
+    std::cout << "\nKL-Divergence: " << kl_div << " (lower is better)" << std::endl;
+
+    // 5. Additional Metrics
+    fp32 confidence_diff = std::abs(naive_confidence - quantized_confidence);
+    std::cout << "Confidence Difference: " << confidence_diff << "%" << std::endl;
+    
+    // Performance assessment
+    std::cout << "\n--- PERFORMANCE ASSESSMENT ---" << std::endl;
+    if (same_prediction) {
+        std::cout << "Same prediction maintained with and without quantization" << std::endl;
+    } else {
+        std::cout << "Error: Prediction changed due to quantization" << std::endl;
+    }
+    
+    if (overlap >= 4) {
+        std::cout << "Great overlap: Top-5 overlap >= 4/5" << std::endl;
+    } else if (overlap >= 3) {
+        std::cout << "Good overlap: Top-5 overlap >= 3/5" << std::endl;
+    } else {
+        std::cout << "Error:  Top-5 overlap < 3/5" << std::endl;
+    }
+    
+    if (kl_div < 0.1f) {
+        std::cout << "Great result: Very similar probability distributions" << std::endl;
+    } else if (kl_div < 0.5f) {
+        std::cout << "Reasonably similar distributions" << std::endl;
+    } else {
+        std::cout << "Error: Very different probability distributions" << std::endl;
+    }
+}
+
+
 void runQuantizedInferenceTest(const Model& model, const Path& basePath) {
-    logInfo("--- Running QUANTIZED Inference Test ---");
+    logInfo("\n--- Running QUANTIZED Inference Test ---");
+
+    // Added by BibidhB: Set to full inference chain mode and reset counter
+    setCalibrationMode(true);  // Enable layer-specific calibration for full chain
+    setDenseCalibrationMode(true);  // Enable dense layer-specific calibration for full chain for dense layers
 
     // Load the input image
     LayerData img(model[0].getInputParams(), basePath / "image_0.bin");
@@ -357,10 +559,15 @@ void runQuantizedInferenceTest(const Model& model, const Path& basePath) {
     const LayerData& naiveOutput = model.inference(img, Layer::InfType::NAIVE);
     std::cout << "QUANTIZED vs NAIVE: ";
     output.compareWithinPrint<fp32>(naiveOutput);
+
+
+    // Added by BibidhB: Add classification performance evaluation
+    // To support accuracy numbers instead of just cosine similarity
+    evaluateClassificationPerformance(naiveOutput, output);
 }
 
 void runAllLayerTests(const Model& model, const Path& basePath) {
-    logInfo("--- Running All Layer Tests ---");
+    logInfo("\n--- Running All Layer Tests ---");
     
     // Test all layers to see complete verification results
     for (std::size_t layerNum = 0; layerNum <= 11; ++layerNum) {

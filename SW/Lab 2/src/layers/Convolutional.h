@@ -52,7 +52,7 @@ class ConvolutionalLayer : public Layer {
 // Utility functions for calibrated quantization
 void resetConvLayerCounter();
 int getCurrentConvLayerCount();
-void enableLayerSpecificCalibration(bool enable);
 bool isLayerSpecificCalibrationEnabled();
+void setCalibrationMode(bool use_layer_specific);
 
 }  // namespace ML

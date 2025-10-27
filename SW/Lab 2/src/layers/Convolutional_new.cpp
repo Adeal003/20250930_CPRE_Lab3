@@ -30,7 +30,7 @@ namespace ML
     static int conv_layer_count = 0;
     
     // Mode flag to determine how to select calibration stats
-    static bool use_layer_specific_calibration = false;
+    static bool use_layer_specific_calibration = false; 
     
     // ==========================================================================
     // SIMPLE JSON PARSER FOR CALIBRATION STATS
@@ -126,6 +126,39 @@ namespace ML
         logInfo("Loaded calibration stats for " + std::to_string(calibration_data.size()) + " layers");
     }
     
+    // ==========================================================================
+    // CALIBRATION STATE MANAGEMENT
+    // --------------------------------------------------------------------------
+    // Tracks global state used by calibrated quantization:
+    //  - calibration_data: map of layer name -> CalibrationStats loaded from JSON
+    //  - calibration_loaded: indicates whether calibration_data has been loaded
+    //  - conv_layer_count: call-order counter used to pick layer-specific stats
+    //      - incremented inside computeQuantized() when layer-specific mode is enabled
+    //      - reset via resetCalibrationState() / resetConvLayerCounter()
+    //  - use_layer_specific_calibration: mode flag
+    //      - false: "individual test" mode — every layer uses "_input" stats
+    //      - true: "full inference chain" — layers use conv2d, conv2d_1, ... based on conv_layer_count
+    //
+    // Helper functions around this state:
+    //  - loadCalibrationStats(path)  : loads calibration_data from JSON (idempotent)
+    //  - resetCalibrationState()     : resets conv_layer_count and logs
+    //  - setCalibrationMode(flag)    : toggles mode and resets counter
+    //  - resetConvLayerCounter()     : resets conv_layer_count (public wrapper)
+    //  - getCurrentConvLayerCount()  : returns current conv_layer_count
+    //  - enableLayerSpecificCalibration(enable) : convenience wrapper to set mode
+    //  - isLayerSpecificCalibrationEnabled()    : query current mode
+    // ==========================================================================
+    void resetCalibrationState() {
+        conv_layer_count = 0;
+        logInfo("Reset calibration state: conv_layer_count = 0");
+    }
+
+    void setCalibrationMode(bool use_layer_specific) {
+        use_layer_specific_calibration = use_layer_specific;
+        resetCalibrationState();
+        logInfo("Set calibration mode: " + std::string(use_layer_specific ? "layer-specific" : "individual-tests"));
+    }
+
     // ==========================================================================
     // LAB 2: NAIVE CONVOLUTION (Baseline - No Quantization)
     // ==========================================================================
@@ -277,47 +310,96 @@ namespace ML
         }
         
         // ==========================================================================
-        // ADAPTIVE INPUT CALIBRATION SELECTION
+        // SECTION 2: GET DIMENSIONS (Moved up by BibidhB to make variables available)
         // ==========================================================================
-        // Two modes:
-        // 1. Individual layer tests: All layers receive raw image → use "_input" stats
-        // 2. Full inference chain: Each layer receives previous layer output → use layer-specific stats
+        const auto &inputDims = getInputParams().dims;
+        const auto &outputDims = getOutputParams().dims;
+        const auto &weightDims = getWeightParams().dims;
+
+        size_t U = 1; // Stride
+        size_t W = inputDims[1];
+        size_t C = inputDims[2];
+        size_t P = outputDims[0];
+        size_t Q = outputDims[1];
+        size_t M = outputDims[2];
+        size_t R = weightDims[0];
+        size_t S = weightDims[1];
+        
+        // ==========================================================================
+        // ADAPTIVE INPUT CALIBRATION SELECTION FOR CONVOLUTIONAL LAYERS
+        // ==========================================================================
+        // Two calibration modes are supported:
+        // 1) Individual layer tests (use_layer_specific_calibration == false):
+        //    - Every invocation treats the input as the raw image.
+        //    - Always use "_input" calibration stats.
+        //    - conv_layer_count is NOT incremented.
+        // 2) Full inference chain (use_layer_specific_calibration == true):
+        //    - Layers are assigned calibration names by call order using conv_layer_count.
+        //    - conv_layer_count == 0 -> use "_input"
+        //    - conv_layer_count == 1 -> "conv2d"
+        //    - conv_layer_count == 2..6 -> "conv2d_1" .. "conv2d_5" (conv_layer_count-1 suffix)
+        //    - conv_layer_count > 6 -> fallback to "conv2d_5"
+        //    - conv_layer_count is incremented after selecting the name so the next
+        //      convolution invocation uses the next layer's stats.
+        // Note: conv_layer_count can be reset via resetCalibrationState()/resetConvLayerCounter()
+        // and mode toggled with setCalibrationMode()/enableLayerSpecificCalibration().
         // ==========================================================================
         
         std::string input_stats_name;
-        if (use_layer_specific_calibration) {
-            // Full inference mode: use layer-specific calibration stats
+
+        // Check if this is an individual layer test (always start with raw image)
+        // vs full inference chain (layer gets previous layer's output)
+        bool is_individual_layer_test = !use_layer_specific_calibration;
+
+        if (is_individual_layer_test) {
+            // Individual layer test mode: all layers get raw image input
+            input_stats_name = "_input";
+            // Don't increment counter for individual tests
+        } else {
+            // Full inference chain mode: use layer-specific calibration
             if (conv_layer_count == 0) {
-                input_stats_name = "_input";  // First layer always gets raw input
-            } else {
+                input_stats_name = "_input";
+            } else if (conv_layer_count <= 5) {  // Only 6 conv layers exist (0-5)
                 input_stats_name = "conv2d";
                 if (conv_layer_count > 1) {
                     input_stats_name += "_" + std::to_string(conv_layer_count - 1);
                 }
+            } else {
+                //  Reasoning:
+                //  Downstream layers (fully-connected, pooling, activations, normalization, etc.)
+                //    commonly consume the outputs produced by the last convolutional layer.
+                //  Calibration data computed for conv outputs (e.g., activation ranges, quantization
+                //    scale/zero-point, running statistics) is the only available estimate of the
+                //    dynamic range for those activations when later layers have no separate
+                //    calibration step.
+                //  Using the last conv calibration is a conservative fallback that prevents
+                //    uncalibrated layers from causing quantization/scale mismatches or incorrect
+                //    numeric behavior.
+                input_stats_name = "conv2d_5";  // Use conv2d_5 for any layer beyond
+                logInfo("Layer beyond conv range, using fallback calibration: conv2d_5");
             }
-        } else {
-            // Individual layer test mode: all layers get raw image input
-            input_stats_name = "_input";
+            // Increment counter for next layer in chain
+            conv_layer_count++;
         }
         
         // Identify current layer for logging purposes only
         std::string current_layer_name;
         if (P == 60 && Q == 60 && M == 32) {
-            current_layer_name = "conv2d";
+            current_layer_name = "conv2d";       // Conv1 is conv2d
         } else if (P == 56 && Q == 56 && M == 32) {
-            current_layer_name = "conv2d_1";
-        } else if (P == 28 && Q == 28 && M == 32) {
-            current_layer_name = "conv2d_2";
+            current_layer_name = "conv2d_1";     // Conv2 is conv2d_1
         } else if (P == 26 && Q == 26 && M == 64) {
-            current_layer_name = "conv2d_3";
+            current_layer_name = "conv2d_2";     // Conv3 is conv2d_2
         } else if (P == 24 && Q == 24 && M == 64) {
-            current_layer_name = "conv2d_4";
-        } else if (P == 12 && Q == 12 && M == 64) {
-            current_layer_name = "conv2d_5";
+            current_layer_name = "conv2d_3";     // Conv4 is conv2d_3
+        } else if (P == 10 && Q == 10 && M == 64) {
+            current_layer_name = "conv2d_4";     // Conv5 is conv2d_4 (FIXED!)
+        } else if (P == 8 && Q == 8 && M == 128) {
+            current_layer_name = "conv2d_5";     // Conv6 is conv2d_5 (Added by BibidhB to match layer dims)
         } else {
             current_layer_name = "unknown_layer";
         }
-        
+                
         // Find the input calibration stats (always use "_input" for individual layer tests)
         auto input_stats_it = calibration_data.find(input_stats_name);
         if (input_stats_it == calibration_data.end()) {
@@ -336,27 +418,7 @@ namespace ML
         logInfo("Using calibration stats: " + input_stats_name + " - Si=" + std::to_string(input_stats.Si) + 
                 ", zi=" + std::to_string(static_cast<int>(input_stats.zi)));
         
-        // Increment counter for next layer in chain
-        if (use_layer_specific_calibration) {
-            conv_layer_count++;
-        }
-        
-        // ==========================================================================
-        // SECTION 2: GET DIMENSIONS (Same as Lab 2)
-        // ==========================================================================
-        const auto &inputDims = getInputParams().dims;
-        const auto &outputDims = getOutputParams().dims;
-        const auto &weightDims = getWeightParams().dims;
-
-        size_t U = 1; // Stride
-        size_t W = inputDims[1];
-        size_t C = inputDims[2];
-        size_t P = outputDims[0];
-        size_t Q = outputDims[1];
-        size_t M = outputDims[2];
-        size_t R = weightDims[0];
-        size_t S = weightDims[1];
-        
+            
         // ==========================================================================
         // SECTION 3: USE PRE-CALCULATED QUANTIZATION PARAMETERS
         // ==========================================================================
@@ -569,7 +631,7 @@ namespace ML
         }
         output_avg /= output_size;
         
-        logInfo("Layer " + current_layer_name + " quantized convolution complete");
+        logInfo("Layer " + current_layer_name + " quantized convolution complete\n"); // Extra newline for readability
         logDebug("Output statistics - Min: " + std::to_string(output_min) + 
                 ", Max: " + std::to_string(output_max) + 
                 ", Avg: " + std::to_string(output_avg));
